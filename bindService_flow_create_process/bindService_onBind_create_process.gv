@@ -1,0 +1,333 @@
+digraph bind_service_onbind {
+
+    // clusterrank=none or global
+    graph [fontname = "Microsoft YaHei", fontsize=36, label="从进程的角度，分析App A绑定App B的Service的流程 \n 情况1：App B进程第一次启动 \n [基于 Android 7.1.1 r13，by galian 20170123] \n 【注意：箭头表示流程，不表示调用关系】", labelloc="top", size="75,100"]
+
+    edge [color = "blue", fontsize=20, comment="表示流程，不表示调用关系", fontname = "Microsoft YaHei", penwidth=2]
+
+    node [shape=box, style="filled, rounded", fillcolor="#f0f0f0", fontname = "Microsoft YaHei", fontsize=20]
+
+    subgraph cluster0 {
+        label = "Android App A 进程\n[调用bindService()]";
+        color = blue;
+        fillcolor = "#E6E6FA"
+        style = filled
+
+        // 定义节点
+        node [fontcolor = blue];
+
+        Start [label="起点", shape=hexagon, style="bold, rounded", fontsize=30, penwidth=2]
+        End [label="终点", shape=hexagon, style="bold, rounded", fontsize=30, penwidth=2]
+        Context_bindService_A [label="bindService()@ContextImpl \n 从App A中的某个Activity调用bindService()开始"];
+
+        mPackageInfo_getServiceDispatcher [label="getServiceDispatcher()@LoadedApk \n\n 创建IServiceConnection接口，其具体实现是InnerConnection对象。\n IServiceConnection接口用于AMS在bindService成功后通知App A，\n 即调用App A的ServiceConnection的onServiceConnected()"]
+
+        bindServiceCommon_A [label="bindServiceCommon()@ContextImpl \n\n 调用ActivityManagerService的bindService()，进入AMS进程，\n 3个重要参数：\n 1. IApplicationThread接口（ApplicationThread对象） \n 2. ServiceDispatcher对象，AMS回调App A的onServiceConnected() \n 3. 要启动的service对应的Intent"];
+        // 进入AMS进程
+        
+        // 从AMS进程回来
+        connected_InnerConnection_A [label="connected()@InnerConnection@ServiceDispatcher@LoadedApk"]
+        connected_ServiceDispatcher [label="connected()@ServiceDispatcher@LoadedApk"]
+        doConnected [label="doConnected()"]
+        mConnection_onServiceConnected [label="mConnection.onServiceConnected() \n mConnection就是App A在调用bindService()时传入的ServiceConnection"]
+        Activity_ServiceConnection_onServiceConnected [label="执行ServiceConnection的onServiceConnected() \n 将App B的onBind()返回的binder传给App A。\n 至此，流程结束。"]
+
+        // 定义 边
+        edge [label="", color=blue, fontcolor=blue]
+        Start -> Context_bindService_A -> mPackageInfo_getServiceDispatcher -> bindServiceCommon_A // 进入AMS进程
+
+        connected_InnerConnection_A -> connected_ServiceDispatcher -> doConnected -> mConnection_onServiceConnected -> Activity_ServiceConnection_onServiceConnected -> End
+    }
+
+    subgraph cluster1 {
+        // subgraph的属性
+        label = "AMS进程 \n [system_server]";
+        color = purple;
+        fillcolor = "#E6E6FA"
+        style = filled
+
+        // 定义节点
+        node [fontcolor = purple];
+
+        // 从App A进程到此
+        bindService_AMS [label="bindService()@ActivityManagerService \n 执行mServices.bindServiceLocked() \n mServices是ActiveServices类型"];
+
+        bindServiceLocked_AMS [label="bindServiceLocked()@ActiveServices"];
+        retrieveServiceLocked_AMS [label="retrieveServiceLocked()@ActiveServices \n 创建ServiceRecord"];
+
+        bringUpServiceLocked_AMS [label="bringUpServiceLocked()@ActiveServices \n\n 这时App B进程没启动。\n 创建App B进程，再启动Service。 \n [app=mAm.startProcessLocked(...)]"];
+
+        // 启动App B进程的流程
+        startProcessLocked_9params [label="startProcessLocked(9个参数)@ActivityManagerService"] 
+        startProcessLocked_14params [label="startProcessLocked(14个参数)@ActivityManagerService"]
+        newProcessRecordLocked [label="newProcessRecordLocked()@ActivityManagerService \n 创建App B的ProcessRecord"];
+
+        startProcessLocked_6params  [label="startProcessLocked(6个参数)@ActivityManagerService \n 注意entryPoint=\"android.app.ActivityThread\"，\n 是启动App B进程后的执行入口[ActivityThread.main()]"];
+
+        Process_start [label="Process.start(entryPoint, app.processName, ...) \n 通过socket将消息发给Zygote，启动App B进程"];
+        start_in_Process [label="start()@Process"]
+        startViaZygote [label="startViaZygote()@Process"]
+        openZygoteSocketIfNeeded [label="openZygoteSocketIfNeeded()@Process"]
+
+        zygoteSendArgsAndGetResult_AMS [label="zygoteSendArgsAndGetResult()@Process \n\n 通过socket通知Zygote进程创建新进程，将进入Zygote进程。\n BufferedWriter writer = zygoteState.writer; \n writer.write(); writer.flush()向Zygote的socket写入数据，\n DataInputStream inputStream = zygoteState.inputStream; \n result.pid = inputStream.readInt(); \n readInt()方法将阻塞，result.pid的赋值操作，\n 是在Zygote进程写入pid之后，才执行到。"]
+        // 进入Zygote进程
+
+        // 从Zygote进程返回
+        zygoteSendArgsAndGetResult_GetResult_AMS [label="zygoteSendArgsAndGetResult()@Process \n\n inputStream = zygoteState.inputStream; \n result.pid = inputStream.readInt() \n 从Zygote返回，readInt()取出Zygote写入的pid"]
+        
+        bringUpServiceLocked_after_startProcess [label="bringUpServiceLocked()@ActiveServices \n 继续执行bringUpServiceLocked()中 \n mAm.startProcessLocked()之后的流程。"]
+
+        mPendingServices_add [label="mPendingServices.add(r); \n\n 在bringUpServiceLocked()中，startProcessLocked()之后。\n r是ServiceRecord实例，此时App B进程正在创建之中，\n 等App B进程创建好之后，再从mPendingServices中 \n 获取要创建的service[ServiceRecord]"]
+            
+        bindServiceLocked_end_AMS [label="bindServiceLocked()@ActiveServices \n\n 执行bringUpServiceLocked()之后的流程 \n 1. 对于[if (s.app != null && b.intent.received) ] \n s为ServiceRecord，s.app为ProcessRecord。\n s.app为null，b.intent.received为false。\n b.intent.received只有在App B执行onBind()，\n 并且publishService()之后才为true。 \n s.app是在realStartServiceLocked()的时候被赋值。\n\n 2. 对于[if (!b.intent.requested)] \n requested为false，满足要求。\n 执行requestServiceBindingLocked()"]
+                
+        requestServiceBindingLocked_first [label="requestServiceBindingLocked()@ActiveServices \n\n 对于[if (r.app == null || r.app.thread == null)] \n r为App B的service对应的ServiceRecord。\n r.app为App B的ProcessRecord，此时r.app为null，\n 因为r.app是在realStartServiceLocked()的时候被赋值。\n 所以从这里就返回了，不执行操作。"]
+
+        return_App_A [label="返回App A调用bindService()的地方。\n\n 此分支流程结束，但是此时App B进程正在创建之中。\n 请继续Zygote创建App B进程后，\n 执行handleChildProc()的流程。\n handleChildProc()是在App B进程中执行的。"]
+        // 此分支流程结束
+        
+        // 创建App B进程后，初始化App B进程【ActivityThread.main()】
+        attachApplication_AMS [label="attachApplication()@AMS"]
+        attachApplicationLocked [label="attachApplicationLocked() \n app.makeActive(thread,...); \n app是ProcessRecord，此时将app.thread赋值。"]
+
+        generateApplicationProvidersLocked [label="generateApplicationProvidersLocked() \n 如果App B有provider的话，\n 为App B所有的provider创建ContentProviderRecord"]
+        
+        thread_bindApplication_AMS [label="thread.bindApplication(processName, appInfo, providers, ...) \n 在attachApplicationLocked()中 \n thread为实现IApplicationThread接口的实例，\n thread是App B在执行attachApplication时传给AMS的。\n 【进入App B执行bindApplication()】"]
+        // 进入App B进程
+        
+        back_from_App_B_bindApplication_AMS [label="从App B进程回来。\n App B将H.BIND_APPLICATION消息放进消息队列后，\n 没有执行handleBindApplication()。"]
+
+        mStackSupervisor_attachApplicationLocked [label="mStackSupervisor.attachApplicationLocked()@AMS \n 在这个场景中，启动App B的service，\n 并不会有新的activity创建。\n 所以这里基本上什么也没做"]
+
+        mServices_attachApplicationLocked [label="mServices.attachApplicationLocked(app, processName) @ ActiveServices \n\n 1. 处理mPendingServices中的ServiceRecord：\n mPendingServices中是要启动的service，\n 在创建App B进程时，添加到mPendingServices的。\n 2. 执行realStartServiceLocked()"]
+        
+        // App B进程已经存在，启动Service的流程
+        realStartServiceLocked [label="realStartServiceLocked()@ActiveServices \n r.app = app; r是ServiceRecord，r.app是ProcessRecord \n 此时将ServiceRecord中的app赋值了。"]
+
+        app_thread_scheduleCreateService_AMS [label="app.thread.scheduleCreateService() \n app是ProcessRecord实例，是App B进程，\n app.thread为实现IApplicationThread接口的BinderProxy，\n 进入App B进程"]
+        
+        // 从App B进程回来
+        requestServiceBindingsLocked_AMS [label="requestServiceBindingsLocked()@ActiveServices \n 回到realStartServiceLocked()，\n 执行app.thread.scheduleCreateService()之后的流程"]
+
+        requestServiceBindingLocked [label="requestServiceBindingLocked()"]
+        r_app_thread_scheduleBindService_AMS [label="r.app.thread.scheduleBindService() \n 进入到App B进程"]
+        
+        after_scheduleBindService_back_AMS [label="从App B回到AMS，继续执行 \n r.app.thread.scheduleBindService()之后的流程。\n 之前是从attachApplication()一路执行到这里，\n 所以thread.scheduleBindService()之后，\n 将执行到attachApplication()返回。\n 返回到App B调用mgr.attachApplication()的地方。"]
+        
+        publishService_AMS [label="publishService()@ActivityManagerService \n mServices.publishServiceLocked()"]
+
+        publishServiceLocked [label="publishServiceLocked()@ActiveServices \n IntentBindRecord b = r.bindings.get(filter);\n b.binder = service;\n b.requested = true; \n b.received = true;\n 将onBind返回的binder跟intent绑定，并将requested和received置为true，\n 这将在以后的bindService时，直接返回此binder，而不用再调用onBind()"]
+
+        c_conn_connected_AMS [label="c.conn.connected(r.name, service) \n conn为IServiceConnection，是在App A调用bindService()时创建的，\n 是为了AMS回调onServiceConnected()"]
+        
+        // 定义 边
+        edge [label="", color=purple, fontcolor=purple]
+
+        bindService_AMS -> bindServiceLocked_AMS -> retrieveServiceLocked_AMS -> bringUpServiceLocked_AMS
+        bringUpServiceLocked_AMS -> startProcessLocked_9params
+        
+        // 启动App B进程的流程 
+        startProcessLocked_9params -> startProcessLocked_14params -> newProcessRecordLocked -> startProcessLocked_6params
+        startProcessLocked_6params -> Process_start -> start_in_Process -> startViaZygote -> openZygoteSocketIfNeeded -> zygoteSendArgsAndGetResult_AMS // 进入Zygote进程
+        
+        // 创建App B后，Zygote进程返回，回到AMS
+        zygoteSendArgsAndGetResult_GetResult_AMS -> bringUpServiceLocked_after_startProcess -> mPendingServices_add -> bindServiceLocked_end_AMS -> requestServiceBindingLocked_first -> return_App_A
+        
+        // 创建App B后，初始化App B
+        attachApplication_AMS -> attachApplicationLocked -> generateApplicationProvidersLocked -> thread_bindApplication_AMS
+        
+        back_from_App_B_bindApplication_AMS -> mStackSupervisor_attachApplicationLocked -> mServices_attachApplicationLocked
+
+        mServices_attachApplicationLocked -> realStartServiceLocked
+        
+        // App B 进程已经存在，直接启动service
+        realStartServiceLocked -> app_thread_scheduleCreateService_AMS
+        requestServiceBindingsLocked_AMS -> requestServiceBindingLocked -> r_app_thread_scheduleBindService_AMS
+        publishService_AMS -> publishServiceLocked -> c_conn_connected_AMS
+    }
+
+    subgraph cluster2 {
+        // subgraph的属性
+        label = "Zygote进程";
+        color = black;
+        fillcolor = "#E6E6FA"
+        style = filled
+
+        // 定义节点
+        Zygote [label="开机时Zygote进程启动，参考init.rc，\n frameworks\\base\\cmds\\app_process\\app_main.cpp"]
+        
+        main_app_main [label="main()@app_main.cpp \n 创建的runtime为AppRuntime对象，继承自AndroidRuntime。\n 执行runtime.start(\"com.android.internal.os.ZygoteInit\"...)"]
+        
+        start_at_runtime [label="start()@AndroidRuntime \n 主要3个任务：\n 1. 启动虚拟机：startVm(); \n 2. 注册jni：startReg(); \n 3. 执行ZygoteInit的main()方法"]
+
+        main_ZygoteInit [label="main()@ZygoteInit"];
+        registerZygoteSocket [label="registerZygoteSocket()@ZygoteInit \n 打开Server Socket，处于监听状态"]
+        
+        runSelectLoop_Zygote [label="runSelectLoop()@ZygoteInit \n 轮询：while (true) { Os.poll() ...}。\n 接收AMS进程发来的创建进程的消息，执行runOnce()。\n 需要注意执行runSelectLoop()时所在的try块，\n catch的异常是MethodAndArgsCaller。\n 创建App B的进程后，将执行到catch中。"]
+
+        runOnce_Zygote [label="runOnce()@ZygoteConnection \n 主要2个任务：\n 1. fork新进程，进程名设置为App B的进程名。\n 2. 在App B进程中，执行ActivityThread的main() \n [代码在handleChildProc()]"];
+
+        forkAndSpecialize_Zygote [label="forkAndSpecialize()@Zygote \n 创建App B进程。\n Zygote进程（分支2）和App B进程（分支1）并行执行"];
+
+        handleChildProc_Zygote [label="在App B进程中执行 \n 执行handleChildProc()"]
+
+        handleParentProc_Zygote [label="在Zygote进程中执行 \n 执行handleParentProc(); \n\n mSocketOutStream.writeInt(pid); \n 写入pid，还记得Process.start()时，\n result.pid = inputStream.readInt(); \n AMS进程还在阻塞状态，Zygote这里写入pid，AMS将会读取到，\n 然后AMS继续执行Process.start()之后的代码流程。\n 
+        注意handleParentProc()的返回值为false，\n 表示向socket写入数据后，需要等待对方[AMS进程]读取。\n 【将回到AMS进程】"]
+        // 回到AMS进程
+        
+        // 定义 边
+        edge [label="", color=black, fontcolor=black]
+
+        Zygote -> main_app_main -> start_at_runtime -> main_ZygoteInit -> registerZygoteSocket -> runSelectLoop_Zygote
+        runSelectLoop_Zygote -> runOnce_Zygote -> forkAndSpecialize_Zygote
+        
+        forkAndSpecialize_Zygote -> handleChildProc_Zygote [label="分支1：进入App B进程"]
+        forkAndSpecialize_Zygote -> handleParentProc_Zygote [label="分支2：在Zygote进程继续执行"]
+    }       
+    subgraph cluster3 {
+        label = "Android App B 进程 \n [提供Service，执行onBind()]";
+        color = brown;
+        fillcolor = "#E6E6FA"
+        style = filled
+
+        // 定义节点
+        node [fontcolor=brown];
+
+        // 从Zygote创建进程，执行到此。虽然代码在Zygote中，但是进程在App B中
+        handleChildProc_B  [label="handleChildProc()@ZygoteConnection \n 代码在ZygoteConnection，进程在App B中"];
+
+        Process_setArgV0_niceName [label="Process.setArgV0(parsedArgs.niceName) \n 设置进程名"]
+
+        zygoteInit  [label="zygoteInit()@RuntimeInit \n\n 1. commonInit(); \n 2. nativeZygoteInit(); \n 3. applicationInit()"];
+
+        applicationInit [label="applicationInit()@RuntimeInit"];
+
+        invokeStaticMain [label="invokeStaticMain()@RuntimeInit \n\n 1. cl = Class.forName(className...); \n 2. m = cl.getMethod(\"main\", ...); \n className是\"android.app.ActivityThread\" \n m为ActivityThread的main()方法"];
+
+        throwMethodAndArgsCaller [label="throw new ZygoteInit.MethodAndArgsCaller(m, argv) \n\n MethodAndArgsCaller继承自Exception，\n 此异常是在执行runSelectLoop()时抛出的， \n 捕获此异常的地方是ZygoteInit的main()方法的catch块。"]
+
+        catchMethodAndArgsCaller [label="ZygoteInit的main()中。catch块的代码：\n catch (MethodAndArgsCaller caller) \n {         caller.run();         }"]
+
+        run_MethodAndArgsCaller [label="run()@MethodAndArgsCaller@ZygoteInit"]
+
+        callMainMethod [label="mMethod.invoke(...) \n mMethod是之前获取到的ActivityThread的main() \n 所以，执行App B中ActivityThread的main()"]        
+ 
+        ActivityThread_main_B [label="main()@ActivityThread \n 主要工作：\n 1. 创建ApplicationThread，为AMS提供IApplicationThread接口，\n 用于App B和AMS的进程间通信; \n 2. 创建Looper、Handler H，执行loop()，处于阻塞状态，\n 用于处理App B进程内部的消息; \n 3. 执行ActivityThread的attach()，将新创建的进程与App B绑定。\n 因为之前只有进程的名字是App B，绑定后，\n 就与App B的包名、uid、dex、资源等信息联系起来了"]
+        
+        prepareMainLooper [label="Looper.prepareMainLooper()@ActivityThread \n 创建main looper，主线程中只能有一个main looper"]
+
+        new_ActivityThread [label="new ActivityThread() \n\n 此时创建ApplicationThread、Handler H。 \n 见ActivityThread的成员变量ApplicationThread mAppThread、H mH"]
+
+        attach_AT [label="attach()@ActivityThread"]
+
+        attachApplication_ActivityThread_B [label="mgr.attachApplication(mAppThread) \n\n mgr为实现IActivityManager接口的实例，\n App B进程为AMS提供IApplicationThread接口，\n 让AMS把App B的pakcage信息与App B进程绑定起来。"]
+        // 进入AMS进程
+        
+        // 从AMS进程中过来：bindApplication()
+        bindApplication_B [label="bindApplication()@ActivityThread"]
+
+        sendMessage_H_BIND_APPLICATION_B [label="sendMessage(H.BIND_APPLICATION, data) \n\n 将消息H.BIND_APPLICATION放入Handler H的消息队列。\n 【注意】：由于App B是刚刚创建，ActivityThread的Looper.loop()还没有执行，\n 所以，此时【不会执行】到Handler H的handleMessage()。\n 回到AMS进程，继续执行thread.bindApplication()之后的流程"]
+
+        // 从AMS进程中过来：scheduleCreateService()
+        scheduleCreateService_B [label="scheduleCreateService()@ActivityThread \n 从AMS进程过来"]
+
+        sendMessage_H_CREATE_SERVICE [label="sendMessage(H.CREATE_SERVICE, s) \n\n 将H.CREATE_SERVICE放入Hanler H的消息队列。\n 【注意】App B进程是第一次创建，\n 此时App B的ActivityThread的Looper.loop()还没有执行，\n 不会立即执行Hanlder H的handleMessage()。\n 回到AMS进程"]
+        
+        // 从AMS进程中过来：scheduleBindService()
+        scheduleBindService_B [label="scheduleBindService()@ActivityThread"]
+
+        sendMessage_H_BIND_SERVICE [label="sendMessage(H.BIND_SERVICE, s) \n 此时Looper.loop()还没有执行，\n 只是将BIND_SERVICE消息放到消息队列。然后返回AMS。"]
+
+        after_attachApplication_back_B [label="回到mgr.attachApplication()之后的流程。"]
+        
+        Looper_loop_B [label="Looper.loop() \n 在ActivityThread的main()中。 \n App B的主线程运行起来了。\n  还记得之前放入消息队列的3个消息吗？\n 【注：消息不止3个，本文只探讨3个】\n BIND_APPLICATION、CREATE_SERVICE、BIND_SERVICE。\n 按顺序放入的，此时将按顺序执行。"]
+        
+        // 处理BIND_APPLICATION消息
+        handleBindApplication [label="handleBindApplication()@ActivityThread \n 处理第一个消息：BIND_APPLICATION消息"]
+
+        data_info_makeApplication [label="Application app = data.info.makeApplication(..., null) \n\n 1. 创建Application：如果App B没有指定Application，\n则创建android.app.Application；否则创建指定的Application \n 2. 创建ContextImpl：将Application作为ContextImpl的mOuterContext \n 3. makeApplication的第二个参数instrumentation为null，\n 所以此时instrumentation.callApplicationOnCreate()【不会】执行"]
+
+        installContentProviders [label="installContentProviders(app, providers) \n\n providers是在AMS中生成的，是List<ProviderInfo>类型。\n 此时，创建所有provider，并执行Provider的onCreate()"]
+
+        callApplicationOnCreate [label="mInstrumentation.callApplicationOnCreate() \n 执行Application的onCreate()。\n 从这可以看出：\n Provider的onCreate()比Application的onCreate()先执行。"]
+        
+        // 处理CREATE_SERVICE消息
+        handleCreateService [label="handleCreateService()@ActivityThread \n 处理第二个消息：CREATE_SERVICE消息"]
+
+        reflect_create_service [label="service = (Service) cl.loadClass(...).newInstance() \n 创建service实例"]
+
+        ContextImpl_createAppContext [label="context = ContextImpl.createAppContext() \n 创建ContextImpl"]
+
+        setOuterContext [label="context.setOuterContext(service) \n 将刚创建的service作为ContextImpl的mOuterContext"]
+
+        packageInfo_makeApplication [label="Application app = packageInfo.makeApplication() \n 直接返回之前bindApplication()时创建的Application"]
+
+        service_onCreate_B [label="service.onCreate() \n 执行service的onCreate()"]
+        
+        // 处理BIND_SERVICE消息
+        handleBindService [label="handleBindService()@ActivityThread \n 处理第三个消息：BIND_SERVICE消息"]
+        service_onBind [label="binder = s.onBind(data.intent) \n 调用service的onBind()"]
+
+        publishService_B [label="publishService(data.token, data.intent, binder) \n 将onBind()返回的binder发布给AMS"]
+
+        // 定义 边
+        edge [label="", color=brown, fontcolor=brown]
+        
+        handleChildProc_B -> Process_setArgV0_niceName -> zygoteInit -> applicationInit -> invokeStaticMain ->  throwMethodAndArgsCaller
+        throwMethodAndArgsCaller -> catchMethodAndArgsCaller -> run_MethodAndArgsCaller -> callMainMethod -> ActivityThread_main_B -> prepareMainLooper -> new_ActivityThread -> attach_AT -> attachApplication_ActivityThread_B
+        
+        after_attachApplication_back_B -> Looper_loop_B
+        
+        bindApplication_B -> sendMessage_H_BIND_APPLICATION_B
+        scheduleCreateService_B -> sendMessage_H_CREATE_SERVICE
+        scheduleBindService_B -> sendMessage_H_BIND_SERVICE
+
+        Looper_loop_B -> handleBindApplication -> data_info_makeApplication -> installContentProviders -> callApplicationOnCreate -> handleCreateService
+        
+        handleCreateService -> reflect_create_service
+        reflect_create_service ->ContextImpl_createAppContext -> setOuterContext -> packageInfo_makeApplication -> service_onCreate_B -> handleBindService
+        
+        handleBindService -> service_onBind -> publishService_B
+    }
+
+    
+    // 进程间的转换
+    edge [color = "red", penwidth=4, fontcolor="red"]
+    
+    // 从App  A 进程进入到AMS进程
+    bindServiceCommon_A -> bindService_AMS [label="进入AMS进程", color=purple, fontcolor=purple]
+    
+    // 从AMS进程 进入 Zygote进程
+    zygoteSendArgsAndGetResult_AMS -> runSelectLoop_Zygote [label="进入 Zygote进程", color=black, fontcolor=black]
+    
+    // 从Zygote fork之后，进入App B进程
+    handleChildProc_Zygote -> handleChildProc_B [label="进入App B进程", color=brown, fontcolor=brown]
+
+    // 从Zygote进程返回到AMS进程
+    handleParentProc_Zygote -> zygoteSendArgsAndGetResult_GetResult_AMS [label="回到AMS进程", color=purple, fontcolor=purple]
+    
+    // 从 App B进程 进入 AMS进程
+    attachApplication_ActivityThread_B -> attachApplication_AMS [label="进入AMS进程", color=purple, fontcolor=purple]
+    
+    // 从AMS进程 进入 App B进程
+    thread_bindApplication_AMS -> bindApplication_B [label="进入App B进程", color=brown, fontcolor=brown]
+
+    sendMessage_H_BIND_APPLICATION_B -> back_from_App_B_bindApplication_AMS [label="回到AMS进程", color=darkgreen, fontcolor=darkgreen]
+    
+    app_thread_scheduleCreateService_AMS -> scheduleCreateService_B [label="进入App B进程", color=brown, fontcolor=brown]
+
+    sendMessage_H_CREATE_SERVICE -> requestServiceBindingsLocked_AMS [label="进入AMS进程", color=purple, fontcolor=purple]
+    
+    r_app_thread_scheduleBindService_AMS -> scheduleBindService_B [label="进入App B进程", color=brown, fontcolor=brown]
+    
+    sendMessage_H_BIND_SERVICE -> after_scheduleBindService_back_AMS [label="进入AMS进程", color=blue, fontcolor=blue]
+
+    after_scheduleBindService_back_AMS -> after_attachApplication_back_B [label="进入App B进程", color=brown, fontcolor=brown]
+    
+    publishService_B -> publishService_AMS [label="进入AMS进程"]
+    
+    c_conn_connected_AMS -> connected_InnerConnection_A [label="进入App A进程"]
+    
+    edge [color = lightgrey, penwidth=2, fontcolor=grey]
+    return_App_A -> handleChildProc_B [label="接下来，继续看App B进程的初始化，handleChildProc()", style=dashed]
+}

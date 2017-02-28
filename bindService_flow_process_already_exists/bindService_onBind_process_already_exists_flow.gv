@@ -1,0 +1,161 @@
+digraph bind_service_onbind {
+
+    // clusterrank=none or global
+    graph [fontname = "Microsoft YaHei", fontsize=36, label="从进程的角度，分析App A绑定App B的Service的流程 \n 情况2：App B进程之前已经启动 \n [基于 Android 7.1.1 r13，by galian 20170123] \n 【注意：箭头表示流程，不表示调用关系】", labelloc="top", clusterrank=none]
+
+    edge [color = "blue", fontsize=20, comment="表示流程，不表示调用关系", fontname = "Microsoft YaHei", penwidth=2]
+
+    node [shape=box, style="filled, rounded", fillcolor="#f0f0f0", fontname = "Microsoft YaHei", fontsize=20]
+    
+    subgraph cluster0 {
+        label = "Android App A 进程 \n [调用bindService()]";
+        color = blue;
+        fillcolor = "#E6E6FA"
+        style = filled
+
+        // 定义节点
+        node [fontcolor = blue];
+
+        Start [label="起点", shape=hexagon, style="bold, rounded", fontsize=30, penwidth=2]
+        End [label="终点", shape=hexagon, style="bold, rounded", fontsize=30, penwidth=2]
+        Context_bindService_A [label="bindService()@ContextImpl \n 从App A中的某个Activity调用bindService()开始"];
+
+        mPackageInfo_getServiceDispatcher [label="getServiceDispatcher()@LoadedApk \n\n 创建IServiceConnection接口，其具体实现是InnerConnection对象。\n IServiceConnection接口用于AMS在bindService成功后通知App A，\n 即调用App A的ServiceConnection的onServiceConnected()"]
+
+        bindServiceCommon_A [label="bindServiceCommon()@ContextImpl \n\n 调用ActivityManagerService的bindService()，进入AMS进程，\n 3个重要参数：\n 1. IApplicationThread接口（ApplicationThread对象） \n 2. ServiceDispatcher对象，AMS回调App A的onServiceConnected() \n 3. 要启动的service对应的Intent"];
+        // 进入AMS进程
+        
+        // 从AMS进程回来
+        connected_InnerConnection_A [label="connected()@InnerConnection@ServiceDispatcher@LoadedApk"]
+        connected_ServiceDispatcher [label="connected()@ServiceDispatcher@LoadedApk"]
+        doConnected [label="doConnected()"]
+        mConnection_onServiceConnected [label="mConnection.onServiceConnected() \n mConnection就是App A在调用bindService()时传入的ServiceConnection"]
+        Activity_ServiceConnection_onServiceConnected [label="执行ServiceConnection的onServiceConnected() \n 将App B的onBind()返回的binder传给App A。\n 至此，流程结束。"]
+
+        // 定义 边
+        edge [label="", color=blue, fontcolor=blue]
+        Start -> Context_bindService_A -> mPackageInfo_getServiceDispatcher -> bindServiceCommon_A // 进入AMS进程
+
+        connected_InnerConnection_A -> connected_ServiceDispatcher -> doConnected -> mConnection_onServiceConnected -> Activity_ServiceConnection_onServiceConnected -> End
+    }
+
+    subgraph cluster1 {
+        // subgraph的属性
+        label = "AMS进程 \n (system_server)";
+        color = purple;
+        fillcolor = "#E6E6FA"
+        style = filled
+
+        // 定义节点
+        node [fontcolor = purple];
+
+        // 从App A进程到此
+        bindService_AMS [label="bindService()@ActivityManagerService \n 执行mServices.bindServiceLocked() \n mServices是ActiveServices类型"];
+
+        bindServiceLocked_AMS [label="bindServiceLocked()@ActiveServices"];
+        retrieveServiceLocked_AMS [label="retrieveServiceLocked()@ActiveServices \n\n 根据intent获取ServiceRecord：\n 1. 如果之前service没有被bind过，则创建ServiceRecord；\n 2. 如果之前service被bind过，则从记录ServiceRecord的 \n mServiceMap中获取ServiceRecord"];
+
+        bringUpServiceLocked_AMS [label="bringUpServiceLocked()@ActiveServices \n 本文分析App B进程已经运行的情况。\n 直接启动Service [realStartServiceLocked()] \n App B进程已经运行，意味着：\n App B的ProcessRecord和ActivityThread已经创建，\n  Provider已经install，Application已经创建。\n attachApplication()已经执行过了。"];
+        
+        realStartServiceLocked [label="realStartServiceLocked()@ActiveServices \n r.app = app; r是ServiceRecord，r.app是ProcessRecord \n 此时将ServiceRecord中的app赋值了。"]
+
+        app_thread_scheduleCreateService_AMS [label="app.thread.scheduleCreateService() \n app是ProcessRecord实例，是App B进程，\n app.thread为实现IApplicationThread接口的BinderProxy，\n 进入App B进程"]
+        
+        scheduleCreateService_back_AMS [label="从App B返回。\n App B正在处理CREATE_SERVICE，这里也继续执行。"]
+
+        requestServiceBindingsLocked_AMS [label="requestServiceBindingsLocked()@ActiveServices"]
+        requestServiceBindingLocked [label="requestServiceBindingLocked()"]
+        r_app_thread_scheduleBindService_AMS [label="r.app.thread.scheduleBindService() \n 进入到App B进程"]
+
+        scheduleBindService_back_AMS [label="从App B返回，AMS继续执行。\n i.requested = true; \n i为IntentBindRecord，此时将requested置为true。\n 表示绑定Service的请求已经发出去了。避免之后重复发绑定请求。"]
+        // AMS 分支流程结束。
+        
+        realStartServiceLocked_back [label="执行realStartServiceLocked()其他的代码，并返回"]
+        bringUpServiceLocked_back [label="从bringUpServiceLocked()返回。\n 因为之前在bringUpServiceLocked()中调用realStartServiceLocked()。"]
+        
+        bindServiceLocked_continue [label="回到bindServiceLocked()，\n 执行调用bringUpServiceLocked()之后的流程。"]
+        
+        bindServiceLocked_end_AMS [label="1. 对于[if (s.app != null && b.intent.received) ] \n s.app不为null，b.intent.received为false。\n b.intent.received只有在App B执行onBind()，\n 并且publishService()之后才为true。\n\n 2. 对于[if (!b.intent.requested)]，requested为true。\n  【不执行】requestServiceBindingLocked()"]
+        
+        back_App_A [label="返回到App A调用bindService()的地方。\n 此时，App B正在处理CREATE_SERVICE和BIND_SERVICE消息。"]
+        
+        publishService_AMS [label="publishService()@ActivityManagerService \n mServices.publishServiceLocked()"]
+
+        publishServiceLocked [label="publishServiceLocked()@ActiveServices \n IntentBindRecord b = r.bindings.get(filter);\n b.binder = service;  b.requested = true;  b.received = true;\n 将onBind返回的binder跟intent绑定，\n 以后bindService时，根据intent直接返回binder。\n 不用再调用Service的onBind()"]
+
+        c_conn_connected_AMS [label="c.conn.connected(r.name, service) \n conn为IServiceConnection，是在App A调用bindService()时创建的，\n 是为了AMS回调onServiceConnected()"]
+        
+        // 定义 边
+        edge [label="", color=purple, fontcolor=purple]
+
+        bindService_AMS -> bindServiceLocked_AMS -> retrieveServiceLocked_AMS -> bringUpServiceLocked_AMS
+        bringUpServiceLocked_AMS -> realStartServiceLocked -> app_thread_scheduleCreateService_AMS
+        scheduleCreateService_back_AMS -> requestServiceBindingsLocked_AMS -> requestServiceBindingLocked -> r_app_thread_scheduleBindService_AMS
+        publishService_AMS -> publishServiceLocked -> c_conn_connected_AMS
+        
+        scheduleBindService_back_AMS -> realStartServiceLocked_back -> bringUpServiceLocked_back -> bindServiceLocked_continue -> bindServiceLocked_end_AMS -> back_App_A
+    }
+
+   
+    subgraph cluster2 {
+        label = "Android App B 进程 \n [提供Service，执行onBind()]";
+        color = brown;
+        fillcolor = "#E6E6FA"
+        style = filled
+
+        // 定义节点
+        node [fontcolor=brown];
+
+        // 创建service的流程
+        scheduleCreateService_B [label="scheduleCreateService()@ActivityThread \n 从AMS进程过来"]
+
+        sendMessage_H_CREATE_SERVICE [label="sendMessage(H.CREATE_SERVICE, s) \n 将H.CREATE_SERVICE放入Hanler H的消息队列。\n 这里分析App B已经运行的情况。\n 所以，立即处理CREATE_SERVICE消息。\n 同时，返回到调用scheduleCreateService()的地方继续执行。\n 即出现了并行处理的情况。"]
+
+        handleCreateService [label="handleCreateService() \n 处理CREATE_SERVICE消息"]
+
+        reflect_create_service [label="service = (Service) cl.loadClass(data.info.name).newInstance() \n 创建service实例"]
+
+        ContextImpl_createAppContext [label="context = ContextImpl.createAppContext() \n 创建ContextImpl"]
+
+        setOuterContext [label="context.setOuterContext(service) \n 将刚创建的service作为ContextImpl的mOuterContext"]
+
+        packageInfo_makeApplication [label="Application app = packageInfo.makeApplication() \n 返回之前创建的Application。\n 因为在App B进程第一次启动时，就创建了Application。"]
+
+        service_onCreate_B [label="service.onCreate() \n 执行service的onCreate() \n 处理CREATE_SERVICE消息完毕。"]
+        
+        scheduleBindService_B [label="scheduleBindService()@ActivityThread"]
+
+        sendMessage_H_BIND_SERVICE [label="sendMessage(H.BIND_SERVICE, s) \n 将BIND_SERVICE消息放入Handler的消息队列mQueue中。\n 然后返回到AMS进程。此时将出现并行处理，\n 即App B等待处理BIND_SERVICE消息 [handleBindService()]，\n 同时，AMS进程继续执行调用scheduleBindService()之后的流程。\n 【注意】要等CREATE_SERVICE消息处理完才处理BIND_SERVICE消息。"]
+
+        handleBindService [label="handleBindService() \n 处理BIND_SERVICE消息"]
+        service_onBind [label="binder = s.onBind(data.intent) \n 调用service的onBind()"]
+
+        publishService_B [label="publishService(data.token, data.intent, binder) \n 将onBind()返回的binder发布给AMS"]
+
+        // 定义 边
+        edge [label="", color=brown, fontcolor=brown]
+        
+        scheduleCreateService_B -> sendMessage_H_CREATE_SERVICE -> handleCreateService -> reflect_create_service
+        reflect_create_service ->ContextImpl_createAppContext -> setOuterContext -> packageInfo_makeApplication -> service_onCreate_B -> handleBindService -> service_onBind -> publishService_B
+        
+        scheduleBindService_B -> sendMessage_H_BIND_SERVICE 
+        sendMessage_H_BIND_SERVICE -> handleBindService [label="等CREATE_SERVICE消息处理完才处理BIND_SERVICE消息", style=dashed, color=grey, fontcolor=grey]
+    }
+
+    
+    // 进程间的转换
+    edge [color = "red", penwidth=4, fontcolor="red"]
+    
+    // 从App  A 进程进入到AMS进程
+    bindServiceCommon_A -> bindService_AMS [label="进入AMS进程", color=darkgreen, fontcolor=darkgreen]
+    
+    app_thread_scheduleCreateService_AMS -> scheduleCreateService_B [label="进入App B进程", color=brown, fontcolor=brown]
+    sendMessage_H_CREATE_SERVICE -> scheduleCreateService_back_AMS [taillabel="回到AMS进程", color=darkgreen, fontcolor=darkgreen]
+        
+    r_app_thread_scheduleBindService_AMS -> scheduleBindService_B [label="进入App B进程", color=brown, fontcolor=brown]
+    sendMessage_H_BIND_SERVICE -> scheduleBindService_back_AMS [taillabel="回到AMS进程", color=darkgreen, fontcolor=darkgreen]
+    
+    publishService_B -> publishService_AMS [label="进入AMS进程", color=purple, fontcolor=purple]
+    
+    c_conn_connected_AMS -> connected_InnerConnection_A [label="进入App A进程"]
+}
