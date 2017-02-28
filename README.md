@@ -1,8 +1,8 @@
-# graphviz
+# graphviz画图的源文件
 
 此repository保存了用graphviz画图的源文件。
 
-## 下载graphviz
+## 0. 下载graphviz
 
 地址：http://graphviz.org/Download..php
 
@@ -20,7 +20,7 @@ $ dot -V
 dot - graphviz version 2.38.0 (20140413.2041)
 ```
 
-## 将.gv生成图片
+## 1. 将.gv生成图片
 
 使用参数`-T`指定输出格式，`-O`表示在原始的.gv文件名上加上`-T`指定的后缀。例如，
 ```language
@@ -42,19 +42,21 @@ dot -Tpng -O -s90 bindService_onBind_create_process.gv
 
 对于对图片大小有限制的网站来说，使用`-s`参数，就可以生成一张小点的图了。
 
-## graphviz的一些语法知识
+## 2. graphviz的一些语法知识
 
-### `clusterrank=none`
+### 2.1 `clusterrank=none`
 
 `graph`属性中多了`clusterrank=none`，这样图中的所有节点的rank值是按照一条线下来的。具体看后面的例子和图片。
 
-## `bindService_flow_create_process`目录
+## 3. 说明
+
+### 3.1 `bindService_flow_create_process`目录
 
 `bindService_onBind_create_process.gv`是bindService时，提供service的进程还没有创建时，代码的执行流程，即要先创建进程。
 
 同目录中的图片是由.gv文件生成的图片。
 
-## `bindService_flow_process_already_exists`目录
+### 3.2 `bindService_flow_process_already_exists`目录
 
 `bindService_onBind_process_already_exists.gv`是bindService时，提供service的进程已经存在了，这时的代码执行流程。
 
